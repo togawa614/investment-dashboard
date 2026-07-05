@@ -1173,7 +1173,7 @@ def render_card(info):
 
     if status == "error":
         return f"""
-        <article class="card status-error" data-change="0" data-volume="0" data-momentum="0" data-sharpe="-999"
+        <article class="card status-error" data-ticker="{info['ticker']}" data-change="0" data-volume="0" data-momentum="0" data-sharpe="-999"
           data-graham="0" data-status="{STATUS_PRIORITY.get('error', 5)}">
           <div class="card-top">
             <div class="name">{info['name']}<span class="ticker">{info['ticker']}</span></div>
@@ -1237,7 +1237,7 @@ def render_card(info):
     data_status = STATUS_PRIORITY.get(status, 5)
 
     return f"""
-    <article class="card status-{status}" data-change="{data_change}" data-volume="{data_volume}"
+    <article class="card status-{status}" data-ticker="{info['ticker']}" data-change="{data_change}" data-volume="{data_volume}"
       data-momentum="{data_momentum:.4f}" data-sharpe="{data_sharpe:.4f}" data-graham="{data_graham:.2f}"
       data-status="{data_status}">
       <div class="card-top">
@@ -1346,6 +1346,8 @@ def render_search_section(all_stocks):
     <section class="search-zone">
       <h2 class="section-title">🔎 全銘柄検索</h2>
       <p class="search-hint">ウォッチリストに入っていない銘柄も、銘柄名・銘柄コードで検索できます{hint}</p>
+      <p class="search-hint">会社概要・理論指標・ニュース分析はウォッチリスト銘柄と買い候補銘柄にのみあります
+        （全{count:,}銘柄すべてに毎回フル分析すると処理が重くなりすぎるため）。該当する銘柄は詳細分析へジャンプできます。</p>
       <div class="search-box">
         <input type="text" id="stock-search-input" placeholder="例: トヨタ / 7203" autocomplete="off">
       </div>
@@ -1371,6 +1373,17 @@ def render_search_section(all_stocks):
         var code = stock.ticker.replace('.T', '');
         var changeCls = (stock.change_pct || 0) >= 0 ? 'rise' : 'fall';
         var checked = window.isPicked && window.isPicked(stock.ticker) ? ' checked' : '';
+
+        // ウォッチリスト・買い候補としてすでに詳細分析済み（会社概要・理論指標・ニュース等）の
+        // カードがページ内にあれば、新しく作らずそこまでジャンプして見せる（重複計算を避けるため）
+        var existingCard = document.querySelector('article.card[data-ticker="' + stock.ticker + '"]');
+        var jumpHtml = '';
+        if (existingCard) {{
+          jumpHtml = '<p class="search-pick-hint">この銘柄は詳細分析済みです。' +
+            '<button type="button" id="search-jump-btn" class="tv-link" style="cursor:pointer;border:1px solid var(--border);background:none;font:inherit;">' +
+            '👇 会社概要・理論指標を見る</button></p>';
+        }}
+
         detailEl.innerHTML =
           '<div class="search-detail-card">' +
           '<div class="card-top"><div class="card-top-left">' +
@@ -1383,10 +1396,24 @@ def render_search_section(all_stocks):
           '<span class="change ' + changeCls + '">' + fmtPct(stock.change_pct) + '</span></div>' +
           '<a class="tv-link" href="https://www.tradingview.com/symbols/TSE-' + code + '/" target="_blank" rel="noopener noreferrer">' +
           '📈 TradingViewでリアルタイムチャートを見る</a>' +
+          jumpHtml +
           '<p class="search-pick-hint">チェックを入れると「選んだ銘柄でポートフォリオ」タブに追加されます</p>' +
           '</div>';
+
         var cb = detailEl.querySelector('.pick-checkbox');
         if (cb && window.wirePickCheckbox) window.wirePickCheckbox(cb);
+
+        var jumpBtn = document.getElementById('search-jump-btn');
+        if (jumpBtn) {{
+          jumpBtn.addEventListener('click', function () {{
+            if (window.showAllTab) window.showAllTab();
+            var target = document.querySelector('article.card[data-ticker="' + stock.ticker + '"]');
+            if (!target) return;
+            target.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+            target.classList.add('card-highlight');
+            setTimeout(function () {{ target.classList.remove('card-highlight'); }}, 2000);
+          }});
+        }}
       }}
 
       function render(query) {{
@@ -2316,6 +2343,12 @@ header.app-header {{
 
 .card.status-buy {{ border-color: color-mix(in srgb, var(--buy) 55%, var(--border)); }}
 .card.status-sell {{ border-color: color-mix(in srgb, var(--sell) 55%, var(--border)); }}
+
+.card.card-highlight {{
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  transition: outline-color 0.3s ease;
+}}
 
 .card-top {{
   display: flex;
@@ -3368,6 +3401,11 @@ footer.disclaimer {{
       if (viewSelected) viewSelected.style.display = (view === 'selected') ? '' : 'none';
     }});
   }});
+  // 検索窓から「詳細分析済みのカードまでジャンプ」できるよう、全銘柄タブへの切り替えを公開する
+  window.showAllTab = function () {{
+    var btn = document.querySelector('.view-tab-btn[data-view="all"]');
+    if (btn) btn.click();
+  }};
 
   // --- チェックボックスで選んだ銘柄の記録（このブラウザのlocalStorageにのみ保存） ---
   var PICKS_KEY = 'investmentPicks';
