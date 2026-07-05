@@ -1646,6 +1646,29 @@ header.app-header {{
   white-space: nowrap;
 }}
 
+.refresh-btn {{
+  display: inline-block;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-decoration: none;
+  background: transparent;
+}}
+
+.refresh-btn:hover, .refresh-btn:focus-visible {{
+  background: var(--surface-2);
+}}
+
+.refresh-hint {{
+  margin: 4px 0 0;
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}}
+
 .app-header .subtitle {{
   margin: 4px 0 0;
   font-size: 0.8rem;
@@ -2845,6 +2868,9 @@ footer.disclaimer {{
       <h1>投資部ダッシュボード</h1>
       <span class="updated">最終更新 {updated_at}</span>
     </div>
+    <a class="refresh-btn" href="https://github.com/togawa614/investment-dashboard/actions/workflows/update-dashboard.yml"
+      target="_blank" rel="noopener noreferrer">🔄 今すぐ更新する（GitHubで実行）</a>
+    <p class="refresh-hint">↑GitHubのページが開きます。「Run workflow」をもう一度押すと数分後に反映されます</p>
     <p class="subtitle">ゴールデンクロス + 出来高 + ファンダメンタルで個別株の売買タイミングを監視</p>
     <div class="budget-bar">
       <label for="budget-input">予算</label>
