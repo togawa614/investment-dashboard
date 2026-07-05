@@ -1351,6 +1351,126 @@ def render_market_section(market_finds, scan_meta):
     return ""
 
 
+def render_search_section(all_stocks):
+    """東証上場の内国株式ほぼ全銘柄（ウォッチリスト外も含む）を対象にした検索窓。
+    market_scan.py が保存した全銘柄の基本情報(all_stocks)をそのままページに埋め込み、
+    JS側で銘柄名・コードによる絞り込みと、選んだ銘柄のリアルタイムチャート表示を行う。
+    全銘柄分の詳細分析（ニュース・決算等）は重すぎるため行わず、基本情報+ライブチャートのみ。"""
+    stocks_json = json.dumps(all_stocks, ensure_ascii=False)
+    count = len(all_stocks)
+    hint = f"（対象: 全{count:,}銘柄。市場が開いていない時間帯は前回スキャン時点のデータです）" if count else \
+        "（まだ全銘柄スキャンのデータがありません。しばらくすると使えるようになります）"
+
+    return f"""
+    <section class="search-zone">
+      <h2 class="section-title">🔎 全銘柄検索</h2>
+      <p class="search-hint">ウォッチリストに入っていない銘柄も、銘柄名・銘柄コードで検索できます{hint}</p>
+      <div class="search-box">
+        <input type="text" id="stock-search-input" placeholder="例: トヨタ / 7203" autocomplete="off">
+      </div>
+      <div id="stock-search-results" class="search-results"></div>
+      <div id="stock-search-detail" class="search-detail"></div>
+    </section>
+    <script id="all-stocks-data" type="application/json">{stocks_json}</script>
+    <script>
+    (function() {{
+      var ALL_STOCKS = JSON.parse(document.getElementById('all-stocks-data').textContent || '[]');
+      var input = document.getElementById('stock-search-input');
+      var resultsEl = document.getElementById('stock-search-results');
+      var detailEl = document.getElementById('stock-search-detail');
+      if (!input) return;
+
+      function fmtPct(v) {{
+        if (v === null || v === undefined) return '-';
+        var sign = v >= 0 ? '+' : '';
+        return sign + v.toFixed(2) + '%';
+      }}
+
+      function showDetail(stock) {{
+        var code = stock.ticker.replace('.T', '');
+        var widgetId = 'tv_search_' + code;
+        var changeCls = (stock.change_pct || 0) >= 0 ? 'rise' : 'fall';
+        detailEl.innerHTML =
+          '<div class="search-detail-card">' +
+          '<div class="card-top"><div class="name">' + stock.name +
+          '<span class="ticker">' + stock.ticker + '</span></div></div>' +
+          '<div class="price-row"><span class="price">' + stock.price.toLocaleString('ja-JP', {{minimumFractionDigits: 1, maximumFractionDigits: 1}}) +
+          '<span class="yen">円</span></span>' +
+          '<span class="change ' + changeCls + '">' + fmtPct(stock.change_pct) + '</span></div>' +
+          '<div class="tv-widget-container" id="' + widgetId + '"></div>' +
+          '</div>';
+
+        var root = document.documentElement;
+        var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        var forced = root.getAttribute('data-theme');
+        if (forced === 'dark' || forced === 'light') theme = forced;
+        var el = document.getElementById(widgetId);
+        var s = document.createElement('script');
+        s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+        s.async = true;
+        s.text = JSON.stringify({{
+          symbol: 'TSE:' + code,
+          width: '100%',
+          height: 220,
+          locale: 'ja',
+          dateRange: '1D',
+          colorTheme: theme,
+          isTransparent: true,
+          autosize: true
+        }});
+        el.appendChild(s);
+      }}
+
+      function render(query) {{
+        var q = query.trim().toLowerCase();
+        if (!q) {{
+          resultsEl.innerHTML = '';
+          resultsEl.classList.remove('is-open');
+          return;
+        }}
+        var matches = ALL_STOCKS.filter(function(s) {{
+          var code = s.ticker.replace('.T', '');
+          return s.name.toLowerCase().indexOf(q) !== -1 || code.indexOf(q) !== -1;
+        }}).slice(0, 20);
+
+        if (matches.length === 0) {{
+          resultsEl.innerHTML = '<div class="search-empty">該当する銘柄が見つかりません</div>';
+          resultsEl.classList.add('is-open');
+          return;
+        }}
+
+        resultsEl.innerHTML = matches.map(function(s) {{
+          var changeCls = (s.change_pct || 0) >= 0 ? 'rise' : 'fall';
+          return '<button type="button" class="search-result-row" data-ticker="' + s.ticker + '">' +
+            '<span class="search-result-name">' + s.name + '<span class="ticker">' + s.ticker + '</span></span>' +
+            '<span class="search-result-price">' + s.price.toLocaleString('ja-JP') + '円 ' +
+            '<span class="change ' + changeCls + '">' + fmtPct(s.change_pct) + '</span></span>' +
+            '</button>';
+        }}).join('');
+        resultsEl.classList.add('is-open');
+
+        resultsEl.querySelectorAll('.search-result-row').forEach(function(btn) {{
+          btn.addEventListener('click', function() {{
+            var stock = ALL_STOCKS.find(function(s) {{ return s.ticker === btn.getAttribute('data-ticker'); }});
+            if (stock) showDetail(stock);
+            resultsEl.classList.remove('is-open');
+            input.value = stock ? stock.name : '';
+          }});
+        }});
+      }}
+
+      input.addEventListener('input', function() {{ render(input.value); }});
+      input.addEventListener('focus', function() {{ if (input.value.trim()) render(input.value); }});
+      document.addEventListener('click', function(e) {{
+        if (!resultsEl.contains(e.target) && e.target !== input) {{
+          resultsEl.classList.remove('is-open');
+        }}
+      }});
+    }})();
+    </script>
+    """
+
+
 def build_candidate_json(results, market_finds):
     """ポートフォリオ計算機がJS側で使う候補データをまとめる（保有中・エラーは除く）。
     シャープレシオが低すぎる・利確までの期間目安が長すぎる（または算出不可）銘柄は、
@@ -1390,9 +1510,11 @@ def build_candidate_json(results, market_finds):
     return json.dumps(candidates, ensure_ascii=False)
 
 
-def render_html(results, market_finds=None, scan_meta=None):
+def render_html(results, market_finds=None, scan_meta=None, all_stocks=None):
     market_finds = market_finds or []
+    all_stocks = all_stocks or []
     market_section = render_market_section(market_finds, scan_meta)
+    search_section = render_search_section(all_stocks)
     results_sorted = sorted(results, key=lambda r: STATUS_PRIORITY.get(r["status"], 5))
     action_items = [r for r in results_sorted if r["status"] in ("buy", "sell")]
     candidate_json = build_candidate_json(results_sorted, market_finds)
@@ -2379,6 +2501,99 @@ header.app-header {{
   overflow: hidden;
 }}
 
+.search-zone {{
+  margin-bottom: 18px;
+  position: relative;
+}}
+
+.search-hint {{
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin: 4px 0 8px;
+}}
+
+.search-box input {{
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}}
+
+.search-box input:focus {{
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}}
+
+.search-results {{
+  display: none;
+  position: relative;
+  z-index: 20;
+  margin-top: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}}
+
+.search-results.is-open {{
+  display: block;
+}}
+
+.search-empty {{
+  padding: 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}}
+
+.search-result-row {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}}
+
+.search-result-row:last-child {{
+  border-bottom: none;
+}}
+
+.search-result-row:hover, .search-result-row:focus-visible {{
+  background: var(--surface-2);
+}}
+
+.search-result-name {{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}}
+
+.search-result-price {{
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}}
+
+.search-detail {{
+  margin-top: 10px;
+}}
+
+.search-detail-card {{
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--surface);
+}}
+
 .sparkline {{
   margin-top: 10px;
 }}
@@ -2577,6 +2792,8 @@ footer.disclaimer {{
     </div>
     <p class="budget-bar-hint">↑ここを変えると、全カードの購入可否・利益目安・下のポートフォリオ計算が連動します</p>
   </header>
+
+  {search_section}
 
   <div class="view-tabs" role="tablist" aria-label="表示切り替え">
     <button type="button" class="view-tab-btn is-active" data-view="all">全銘柄</button>
@@ -3158,17 +3375,20 @@ footer.disclaimer {{
 
 
 def load_market_scan_results(positions, benchmark_returns):
-    """market_scan.py が見つけた候補を読み込み、通常のウォッチリストと同じ形式で分析し直す"""
+    """market_scan.py が見つけた候補・全銘柄基本情報を読み込む。
+    候補は通常のウォッチリストと同じ形式で詳細分析し直し、
+    全銘柄基本情報（all_stocks）は検索窓でそのまま使うため軽量なまま返す。"""
     if not MARKET_CANDIDATES_FILE.exists():
-        return [], None
+        return [], None, []
 
     try:
         data = json.loads(MARKET_CANDIDATES_FILE.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"[警告] market_candidates.json の読み込みに失敗: {e}")
-        return [], None
+        return [], None, []
 
     all_candidates = data.get("candidates", [])
+    all_stocks = data.get("all_stocks", [])
     scan_meta = {
         "scanned_at": data.get("scanned_at"),
         "universe_size": data.get("universe_size"),
@@ -3190,7 +3410,7 @@ def load_market_scan_results(positions, benchmark_returns):
             continue
         market_finds.append(info)
 
-    return market_finds, scan_meta
+    return market_finds, scan_meta, all_stocks
 
 
 def generate_dashboard():
@@ -3202,8 +3422,8 @@ def generate_dashboard():
         positions = load_positions()
     benchmark_returns = fetch_benchmark_returns()
     results = [analyze_ticker(ticker, positions, benchmark_returns) for ticker in config.WATCHLIST]
-    market_finds, scan_meta = load_market_scan_results(positions, benchmark_returns)
-    html = render_html(results, market_finds=market_finds, scan_meta=scan_meta)
+    market_finds, scan_meta, all_stocks = load_market_scan_results(positions, benchmark_returns)
+    html = render_html(results, market_finds=market_finds, scan_meta=scan_meta, all_stocks=all_stocks)
     output_path = SCRIPT_DIR / "dashboard.html"
     output_path.write_text(html, encoding="utf-8")
     print(f"ダッシュボード生成完了: {output_path}")

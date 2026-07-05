@@ -56,10 +56,12 @@ def get_universe():
     return dict(zip(subset["ticker"], subset["銘柄名"]))
 
 
-def screen_chunk(data, tickers):
-    """ダウンロード済みの株価データから、ゴールデンクロス＋出来高急増の銘柄だけ抽出する。
-    後で上位だけに絞れるよう、出来高倍率とトレンドの強さも一緒に返す。"""
+def screen_chunk(data, tickers, universe):
+    """ダウンロード済みの株価データから、(1)ゴールデンクロス＋出来高急増の候補(hits)と、
+    (2)検索窓で使う全銘柄の基本情報(all_info: 銘柄名・現在値・前日比・勢いスコア)の両方を返す。
+    全銘柄検索のために、条件に合致しない銘柄も基本情報だけは記録しておく。"""
     hits = []
+    all_info = []
     min_len = config.LONG_MA_WINDOW + config.VOLUME_LOOKBACK_WINDOW
 
     for t in tickers:
@@ -67,12 +69,37 @@ def screen_chunk(data, tickers):
             sub = data[t][["Close", "Volume"]].dropna()
         except (KeyError, TypeError):
             continue
+        if len(sub) < 2:
+            continue
+
+        price = float(sub["Close"].iloc[-1])
+        prev_price = float(sub["Close"].iloc[-2])
+        change_pct = (price - prev_price) / prev_price * 100 if prev_price else 0.0
+
+        basic = {
+            "ticker": t,
+            "name": universe.get(t, t),
+            "price": round(price, 1),
+            "change_pct": round(change_pct, 2),
+        }
+
         if len(sub) < min_len:
+            all_info.append(basic)
             continue
 
         ma_short = sub["Close"].rolling(config.SHORT_MA_WINDOW).mean()
         ma_long = sub["Close"].rolling(config.LONG_MA_WINDOW).mean()
         vol_avg = sub["Volume"].rolling(config.VOLUME_LOOKBACK_WINDOW).mean()
+
+        trend_strength = float(ma_short.iloc[-1] / ma_long.iloc[-1] - 1) if ma_long.iloc[-1] else 0.0
+        latest_vol = sub["Volume"].iloc[-1]
+        avg_vol = vol_avg.iloc[-1]
+        volume_ratio = None
+        if not pd.isna(avg_vol) and avg_vol != 0:
+            volume_ratio = float(latest_vol / avg_vol)
+        momentum_score = trend_strength + ((volume_ratio - 1) * 0.3 if volume_ratio is not None else 0.0)
+        basic["momentum_score"] = round(momentum_score, 4)
+        all_info.append(basic)
 
         above = (ma_short > ma_long).astype(int)
         cross = above.diff()
@@ -85,31 +112,22 @@ def screen_chunk(data, tickers):
         if days_after > config.GOLDEN_CROSS_RECENT_DAYS:
             continue
 
-        latest_vol = sub["Volume"].iloc[-1]
-        avg_vol = vol_avg.iloc[-1]
-        if pd.isna(avg_vol) or avg_vol == 0:
-            continue
-        volume_ratio = latest_vol / avg_vol
-        if volume_ratio < config.VOLUME_MULTIPLIER:
+        if volume_ratio is None or volume_ratio < config.VOLUME_MULTIPLIER:
             continue
 
         # 通常の100株単位で予算内（2万円）で買えない銘柄はそもそも候補にしない
-        price = float(sub["Close"].iloc[-1])
         if price * 100 > config.BUDGET_JPY:
             continue
 
-        trend_strength = float(ma_short.iloc[-1] / ma_long.iloc[-1] - 1) if ma_long.iloc[-1] else 0.0
-        momentum_score = trend_strength + (volume_ratio - 1) * 0.3
-
         hits.append({
             "ticker": t,
-            "price": round(price, 1),
-            "volume_ratio": round(float(volume_ratio), 2),
+            "price": basic["price"],
+            "volume_ratio": round(volume_ratio, 2),
             "days_after_cross": int(days_after),
-            "momentum_score": round(momentum_score, 4),
+            "momentum_score": basic["momentum_score"],
         })
 
-    return hits
+    return hits, all_info
 
 
 def scan_market():
@@ -118,6 +136,7 @@ def scan_market():
     print(f"スキャン対象: {len(tickers)}銘柄")
 
     all_hits = []
+    all_stocks = []
     for i in range(0, len(tickers), CHUNK_SIZE):
         chunk = tickers[i:i + CHUNK_SIZE]
         print(f"  {i}〜{i + len(chunk)}件目をダウンロード中...")
@@ -134,8 +153,9 @@ def scan_market():
             # 1銘柄だけだとMultiIndexにならないので、その形に合わせて包み直す
             data = pd.concat({chunk[0]: data}, axis=1)
 
-        hits = screen_chunk(data, chunk)
+        hits, basic_info = screen_chunk(data, chunk, universe)
         all_hits.extend(hits)
+        all_stocks.extend(basic_info)
 
     all_hits.sort(key=lambda h: h["momentum_score"], reverse=True)
     for h in all_hits:
@@ -145,9 +165,13 @@ def scan_market():
         "scanned_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         "universe_size": len(tickers),
         "candidates": all_hits,
+        # 検索窓（全銘柄検索）用の一覧。買いシグナル候補に限らず、取得できた全銘柄の
+        # 銘柄名・現在値・前日比・勢いスコアを含む。
+        "all_stocks": all_stocks,
     }
     CANDIDATES_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"完了: {len(all_hits)}件の候補が見つかりました（勢いスコア順）→ {CANDIDATES_FILE}")
+    print(f"完了: {len(all_hits)}件の候補が見つかりました（勢いスコア順）、"
+          f"検索用に{len(all_stocks)}銘柄の基本情報も保存 → {CANDIDATES_FILE}")
     return result
 
 
