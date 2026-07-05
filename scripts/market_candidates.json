@@ -1,0 +1,86 @@
+{
+  "scanned_at": "2026-07-05 22:57",
+  "universe_size": 3716,
+  "candidates": [
+    {
+      "ticker": "7602.T",
+      "price": 166.0,
+      "volume_ratio": 9.14,
+      "days_after_cross": 1,
+      "momentum_score": 2.4973,
+      "name": "レダックス"
+    },
+    {
+      "ticker": "9229.T",
+      "price": 153.0,
+      "volume_ratio": 3.0,
+      "days_after_cross": 0,
+      "momentum_score": 0.648,
+      "name": "サンウェルズ"
+    },
+    {
+      "ticker": "4582.T",
+      "price": 77.0,
+      "volume_ratio": 2.33,
+      "days_after_cross": 0,
+      "momentum_score": 0.4133,
+      "name": "シンバイオ製薬"
+    },
+    {
+      "ticker": "2321.T",
+      "price": 142.0,
+      "volume_ratio": 2.33,
+      "days_after_cross": 0,
+      "momentum_score": 0.4045,
+      "name": "ソフトフロントホールディングス"
+    },
+    {
+      "ticker": "3664.T",
+      "price": 24.0,
+      "volume_ratio": 2.15,
+      "days_after_cross": 0,
+      "momentum_score": 0.3468,
+      "name": "ＷＩＺＥ"
+    },
+    {
+      "ticker": "9973.T",
+      "price": 20.0,
+      "volume_ratio": 2.02,
+      "days_after_cross": 1,
+      "momentum_score": 0.3172,
+      "name": "ＫＯＺＯホールディングス"
+    },
+    {
+      "ticker": "6634.T",
+      "price": 83.0,
+      "volume_ratio": 1.73,
+      "days_after_cross": 0,
+      "momentum_score": 0.2542,
+      "name": "ＪＮグループ"
+    },
+    {
+      "ticker": "4576.T",
+      "price": 79.0,
+      "volume_ratio": 1.62,
+      "days_after_cross": 2,
+      "momentum_score": 0.2405,
+      "name": "デ・ウエスタン・セラピテクス研究所"
+    },
+    {
+      "ticker": "6786.T",
+      "price": 54.0,
+      "volume_ratio": 1.57,
+      "days_after_cross": 0,
+      "momentum_score": 0.1912,
+      "name": "ＲＶＨ"
+    },
+    {
+      "ticker": "8894.T",
+      "price": 25.0,
+      "volume_ratio": 1.52,
+      "days_after_cross": 0,
+      "momentum_score": 0.1619,
+      "name": "ＲＥＶＯＬＵＴＩＯＮ"
+    }
+  ]
+}
