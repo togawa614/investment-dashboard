@@ -143,32 +143,92 @@ def fetch_latest_headline(ticker):
 
 YAHOO_FINANCE_BASE = "https://finance.yahoo.co.jp"
 
-# 見出しに含まれるキーワードから、株価への影響を機械的に推測するための簡易辞書
-# （見出しだけからの単純なキーワード判定であり、内容の正確な理解ではない点に注意）
+# 見出し・本文に含まれるキーワードから、株価への影響を機械的に推測するための辞書
+# （AIによる読解ではなく単語一致による判定である点に注意。ただし単純な見出しキーワードだけでなく
+# 本文まで見て、かつ数値表現（例:「20%増」）も拾うことで「判断できません」を極力減らしている）
 NEWS_NEGATIVE_KEYWORDS = [
     "減益", "減収", "下方修正", "赤字", "損失", "訴訟", "規制強化", "上場廃止",
     "不正", "リコール", "経営破綻", "希薄化", "特別損失", "業績悪化", "自己破産",
+    "減配", "無配", "配当見送り", "工場火災", "生産停止", "操業停止", "品質問題",
+    "課徴金", "行政処分", "粉飾", "内部統制", "監理銘柄", "特設注意市場",
+    "格下げ", "債務超過", "減損", "早期退職", "人員削減", "希望退職",
+    "売上未達", "業績下方", "株式売り出し", "公募増資", "第三者割当", "TOB不成立",
+    "サイバー攻撃", "情報漏えい", "システム障害", "自主回収",
 ]
 NEWS_POSITIVE_KEYWORDS = [
     "増益", "増収", "上方修正", "最高益", "黒字転換", "提携", "自社株買い",
     "好調", "受注拡大", "増配", "上場来高値", "業務提携", "新製品",
+    "特別配当", "自己株式消却", "資本業務提携", "M&A", "買収", "子会社化",
+    "新工場", "増産", "設備投資", "大型受注", "特需", "独占", "世界初",
+    "格上げ", "黒字幅拡大", "最高値更新", "株式分割", "自己資本比率改善",
+    "共同開発", "量産開始", "販売好調", "需要拡大", "認証取得",
 ]
 
+# 見出し・本文の中の「◯◯%増/減」のような数値表現を検出する正規表現
+_PCT_CHANGE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:程度|ほど|の)?\s*(増|減|高|安)")
+# 数値の変化幅がこの値(%)以上なら「大幅」、未満なら「小幅」として強弱を分ける目安
+_LARGE_CHANGE_THRESHOLD = 10.0
 
-def analyze_news_impact(title):
-    """見出しのキーワードから、株価への影響の考え方を短くまとめる（内容の深い理解ではなく機械的な判定）"""
+
+def analyze_news_impact(title, body=""):
+    """見出し＋本文の内容から、株価への影響の考え方をまとめる。
+    まずキーワード辞書、次に「◯%増/減」のような数値表現の順にチェックし、
+    どちらにも一致しない場合だけ本文の冒頭を要約なしの参考情報として提示する
+    （「判断できません」で終わらせず、必ず何らかの手がかりを返す）。"""
+    text = f"{title} {body}"
+
     for kw in NEWS_NEGATIVE_KEYWORDS:
-        if kw in title:
+        if kw in text:
             return f"「{kw}」に関する内容。一般的にはマイナス材料になりやすい傾向。"
     for kw in NEWS_POSITIVE_KEYWORDS:
-        if kw in title:
+        if kw in text:
             return f"「{kw}」に関する内容。一般的にはプラス材料になりやすい傾向。"
-    return "見出しだけではこの銘柄固有の株価材料かどうか判断できません。内容を確認してください。"
+
+    m = _PCT_CHANGE_RE.search(text)
+    if m:
+        pct = float(m.group(1))
+        direction = m.group(2)
+        is_up = direction in ("増", "高")
+        scale = "大幅な" if pct >= _LARGE_CHANGE_THRESHOLD else "小幅な"
+        if is_up:
+            return f"{scale}上昇（{pct:.0f}%{direction}）を示す内容。一般的にはプラス材料になりやすい傾向。"
+        return f"{scale}下落（{pct:.0f}%{direction}）を示す内容。一般的にはマイナス材料になりやすい傾向。"
+
+    if body:
+        snippet = body[:80].strip()
+        if snippet:
+            return f"辞書に該当するキーワードはなし。本文冒頭: 「{snippet}…」（内容を読んでご自身で判断してください）"
+
+    return "本文を取得できず、見出しからも株価への影響は判断できませんでした。リンク先で内容を確認してください。"
+
+
+def fetch_article_body(url, max_chars=600):
+    """ニュース記事本文の冒頭部分を取得する（見出しだけでなく実際の内容を分析に使うため）"""
+    if not url:
+        return ""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
+
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[警告] 記事本文の取得に失敗: {e}")
+        return ""
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    paragraphs = soup.select("article p") or soup.select('div[class*="article"] p') or soup.select("p")
+    text = "".join(p.get_text(strip=True) for p in paragraphs)
+    return text[:max_chars]
 
 
 def fetch_yahoo_finance_news(ticker, limit=3):
-    """Yahoo!ファイナンスの銘柄別ニュースページから日本語の見出し・リンク・影響考察を取得する
-    （yfinanceの英語ニュースだけでは不十分なため、日本語ソースを直接利用する）"""
+    """Yahoo!ファイナンスの銘柄別ニュースページから日本語の見出し・リンク・本文・影響考察を取得する
+    （yfinanceの英語ニュースだけでは不十分なため、日本語ソースを直接利用する。
+    見出しだけでなく実際の記事本文も取得したうえで影響考察を行う）"""
     try:
         import requests
         from bs4 import BeautifulSoup
@@ -197,7 +257,8 @@ def fetch_yahoo_finance_news(ticker, limit=3):
         link_tag = h.find_parent("a")
         href = link_tag.get("href") if link_tag else None
         url = (YAHOO_FINANCE_BASE + href) if href and href.startswith("/") else href
-        results.append({"title": title, "url": url, "impact": analyze_news_impact(title)})
+        body = fetch_article_body(url)
+        results.append({"title": title, "url": url, "impact": analyze_news_impact(title, body)})
     return results
 
 
