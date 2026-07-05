@@ -847,6 +847,46 @@ def render_quant(info):
     """
 
 
+def to_tradingview_symbol(ticker):
+    """yfinance形式のティッカー（例: 6857.T）をTradingViewのシンボル形式（例: TSE:6857）に変換する"""
+    code = ticker.replace(".T", "")
+    return f"TSE:{code}"
+
+
+def render_tradingview_widget(ticker):
+    """TradingView社が無料公開している埋め込みウィジェットで、本物のリアルタイムチャートを表示する。
+    ページを開いている間、TradingView側から直接ライブの値動きが流れてくる（当サイトのデータ取得とは無関係）。
+    ダークモード/ライトモードは、このページの配色設定(data-theme)に合わせて自動で切り替える。"""
+    symbol = to_tradingview_symbol(ticker)
+    widget_id = "tv_" + re.sub(r"[^a-zA-Z0-9]", "_", ticker)
+    return f"""
+    <div class="tv-widget-container" id="{widget_id}"></div>
+    <script>
+    (function() {{
+      var root = document.documentElement;
+      var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      var forced = root.getAttribute('data-theme');
+      if (forced === 'dark' || forced === 'light') theme = forced;
+      var el = document.getElementById('{widget_id}');
+      var s = document.createElement('script');
+      s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+      s.async = true;
+      s.text = JSON.stringify({{
+        symbol: '{symbol}',
+        width: '100%',
+        height: 160,
+        locale: 'ja',
+        dateRange: '1D',
+        colorTheme: theme,
+        isTransparent: true,
+        autosize: true
+      }});
+      el.appendChild(s);
+    }})();
+    </script>
+    """
+
+
 def render_sparkline(info):
     """直近の値動きを線グラフで表示する。理論株価があれば破線の目安ラインも重ねる。"""
     prices = info.get("price_history")
@@ -1172,6 +1212,7 @@ def render_card(info):
         <span class="price">{fmt_price(info['price'])}<span class="yen">円</span></span>
         {change_html}
       </div>
+      {render_tradingview_widget(info['ticker'])}
       {render_sparkline(info)}
       {detail_html}
     </article>
@@ -2268,6 +2309,13 @@ header.app-header {{
 .sort-btn:focus-visible {{
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}}
+
+.tv-widget-container {{
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }}
 
 .sparkline {{
