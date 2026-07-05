@@ -908,15 +908,18 @@ def render_quant(info):
     """
 
 
-def render_tradingview_widget(ticker):
-    """TradingView社が無料公開している埋め込みウィジェットで、本物のリアルタイムチャートを表示する。
-    ページを開いている間、TradingView側から直接ライブの値動きが流れてくる（当サイトのデータ取得とは無関係）。
-    ダークモード/ライトモードは、このページの配色設定(data-theme)に合わせて自動で切り替える。"""
-    widget_id = "tv_" + re.sub(r"[^a-zA-Z0-9]", "_", ticker)
-    return f"""
-    <div class="tv-widget-container" id="{widget_id}"></div>
-    <script>window.embedTVWidget('{widget_id}', '{ticker}', 160);</script>
-    """
+def tradingview_url(ticker):
+    code = ticker.replace(".T", "")
+    return f"https://www.tradingview.com/symbols/TSE-{code}/"
+
+
+def render_tradingview_link(ticker):
+    """TradingViewの銘柄ページへのリンク。埋め込みウィジェットは環境によって表示されないことがあるため、
+    確実に見られるリンク方式にしている。"""
+    return (
+        f'<a class="tv-link" href="{tradingview_url(ticker)}" target="_blank" '
+        f'rel="noopener noreferrer">📈 TradingViewでリアルタイムチャートを見る</a>'
+    )
 
 
 def render_sparkline(info):
@@ -1015,7 +1018,13 @@ def fmt_market_cap(v):
     return f"{oku:,.0f}億円"
 
 
+_RELATIVE_TERM_LABELS = ["今期", "前期", "前々期"]
+
+
 def render_financials_table(rows):
+    """直近3期分の本決算（今期・前期・前々期）を表として表示する。
+    四半期決算ではなく年度末の本決算であることが伝わるよう、決算期の日付表記に加えて
+    「今期／前期／前々期」という相対的なラベルも併記する。"""
     if not rows:
         return '<p class="financials-empty">決算データを取得できませんでした。</p>'
 
@@ -1023,9 +1032,10 @@ def render_financials_table(rows):
         return f"{v:,.2f}" if v is not None else "-"
 
     body = ""
-    for r in rows:
+    for i, r in enumerate(rows):
+        term_label = _RELATIVE_TERM_LABELS[i] if i < len(_RELATIVE_TERM_LABELS) else f"{i+1}期前"
         body += (
-            f"<tr><td>{r['fiscal_year']}</td>"
+            f"<tr><td>{r['fiscal_year']}<span class=\"term-label\">（{term_label}）</span></td>"
             f"<td>{cell(r['revenue'])}</td>"
             f"<td>{cell(r['operating_income'])}</td>"
             f"<td>{cell(r['net_income'])}</td></tr>"
@@ -1037,7 +1047,7 @@ def render_financials_table(rows):
         <thead><tr><th>決算期</th><th>売上高</th><th>営業利益</th><th>純利益</th></tr></thead>
         <tbody>{body}</tbody>
       </table>
-      <p class="financials-unit">単位: 億円（直近が上）</p>
+      <p class="financials-unit">単位: 億円（今期・前期・前々期の本決算。四半期決算ではありません）</p>
     </div>
     """
 
@@ -1149,7 +1159,7 @@ def render_company_profile(info):
       </div>
       {summary_html}
       {render_pro_fundamentals(profile.get("pro"))}
-      <p class="financials-title">直近3期の決算</p>
+      <p class="financials-title">直近3期の本決算（今期・前期・前々期。四半期決算ではありません）</p>
       {render_financials_table(profile.get("financials"))}
       <p class="financials-title">📰 関連ニュース（Yahoo!ファイナンス）</p>
       {render_news_headlines(profile.get("news_headlines"))}
@@ -1244,7 +1254,7 @@ def render_card(info):
         <span class="price">{fmt_price(info['price'])}<span class="yen">円</span></span>
         {change_html}
       </div>
-      {render_tradingview_widget(info['ticker'])}
+      {render_tradingview_link(info['ticker'])}
       {render_sparkline(info)}
       {detail_html}
     </article>
@@ -1344,31 +1354,6 @@ def render_search_section(all_stocks):
     </section>
     <script id="all-stocks-data" type="application/json">{stocks_json}</script>
     <script>
-    // ページ内のどこからでも呼べる共通関数: 指定した要素にTradingViewのライブチャートを埋め込む
-    window.embedTVWidget = function(containerId, ticker, height) {{
-      var code = ticker.replace('.T', '');
-      var root = document.documentElement;
-      var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      var forced = root.getAttribute('data-theme');
-      if (forced === 'dark' || forced === 'light') theme = forced;
-      var el = document.getElementById(containerId);
-      if (!el) return;
-      var s = document.createElement('script');
-      s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
-      s.async = true;
-      s.text = JSON.stringify({{
-        symbol: 'TSE:' + code,
-        width: '100%',
-        height: height || 160,
-        locale: 'ja',
-        dateRange: '1D',
-        colorTheme: theme,
-        isTransparent: true,
-        autosize: true
-      }});
-      el.appendChild(s);
-    }};
-
     (function() {{
       var ALL_STOCKS = JSON.parse(document.getElementById('all-stocks-data').textContent || '[]');
       var input = document.getElementById('stock-search-input');
@@ -1383,7 +1368,7 @@ def render_search_section(all_stocks):
       }}
 
       function showDetail(stock) {{
-        var widgetId = 'tv_search_' + stock.ticker.replace('.T', '');
+        var code = stock.ticker.replace('.T', '');
         var changeCls = (stock.change_pct || 0) >= 0 ? 'rise' : 'fall';
         detailEl.innerHTML =
           '<div class="search-detail-card">' +
@@ -1392,9 +1377,9 @@ def render_search_section(all_stocks):
           '<div class="price-row"><span class="price">' + stock.price.toLocaleString('ja-JP', {{minimumFractionDigits: 1, maximumFractionDigits: 1}}) +
           '<span class="yen">円</span></span>' +
           '<span class="change ' + changeCls + '">' + fmtPct(stock.change_pct) + '</span></div>' +
-          '<div class="tv-widget-container" id="' + widgetId + '"></div>' +
+          '<a class="tv-link" href="https://www.tradingview.com/symbols/TSE-' + code + '/" target="_blank" rel="noopener noreferrer">' +
+          '📈 TradingViewでリアルタイムチャートを見る</a>' +
           '</div>';
-        window.embedTVWidget(widgetId, stock.ticker, 220);
       }}
 
       function render(query) {{
@@ -2257,6 +2242,12 @@ header.app-header {{
   color: var(--text-muted);
 }}
 
+.term-label {{
+  display: block;
+  font-size: 0.62rem;
+  color: var(--text-muted);
+}}
+
 .financials-empty {{
   margin: 0;
   font-size: 0.72rem;
@@ -2578,11 +2569,20 @@ header.app-header {{
   outline-offset: 2px;
 }}
 
-.tv-widget-container {{
+.tv-link {{
+  display: inline-block;
   margin-top: 10px;
+  padding: 8px 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  overflow: hidden;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+}}
+
+.tv-link:hover, .tv-link:focus-visible {{
+  background: var(--surface-2);
 }}
 
 .search-zone {{
@@ -3434,7 +3434,7 @@ footer.disclaimer {{
       var stopPrice = checkPrice * (1 + STOP_LOSS_PCT);
       var targetPrice = checkPrice * (1 + TAKE_PROFIT_PCT);
       var checkedAtStr = new Date(pick.checkedAt).toLocaleString('ja-JP');
-      var widgetId = 'tv_selected_' + ticker.replace('.T', '');
+      var tvUrl = 'https://www.tradingview.com/symbols/TSE-' + ticker.replace('.T', '') + '/';
 
       var currentBlock;
       var gaugeHtml = '';
@@ -3463,17 +3463,13 @@ footer.disclaimer {{
         '<div class="detail">チェック時点の価格 ' + yen(checkPrice) + '円（' + checkedAtStr + '）</div>' +
         '<div class="detail">' + currentBlock + '</div>' +
         gaugeHtml +
-        '<div class="tv-widget-container" id="' + widgetId + '"></div>' +
+        '<a class="tv-link" href="' + tvUrl + '" target="_blank" rel="noopener noreferrer">📈 TradingViewでリアルタイムチャートを見る</a>' +
         '<div class="timing"><div class="timing-row"><span class="timing-label">売るタイミング</span>' +
         '<span>' + yen(stopPrice) + '円を下回ったら損切り、' + yen(targetPrice) + '円を上回ったら利確が目安' +
         '（チェック時点の価格基準）。</span></div></div>' +
         '</div>';
     }});
     container.innerHTML = summaryHtml + compareHtml + html;
-
-    rows.forEach(function (r) {{
-      window.embedTVWidget('tv_selected_' + r.ticker.replace('.T', ''), r.ticker, 160);
-    }});
 
     container.querySelectorAll('.selected-remove-btn').forEach(function (btn) {{
       btn.addEventListener('click', function () {{
