@@ -1370,16 +1370,23 @@ def render_search_section(all_stocks):
       function showDetail(stock) {{
         var code = stock.ticker.replace('.T', '');
         var changeCls = (stock.change_pct || 0) >= 0 ? 'rise' : 'fall';
+        var checked = window.isPicked && window.isPicked(stock.ticker) ? ' checked' : '';
         detailEl.innerHTML =
           '<div class="search-detail-card">' +
-          '<div class="card-top"><div class="name">' + stock.name +
-          '<span class="ticker">' + stock.ticker + '</span></div></div>' +
+          '<div class="card-top"><div class="card-top-left">' +
+          '<label class="pick-label"><input type="checkbox" class="pick-checkbox" data-ticker="' + stock.ticker +
+          '" data-name="' + stock.name + '" data-price="' + stock.price + '"' + checked + '></label>' +
+          '<div class="name">' + stock.name +
+          '<span class="ticker">' + stock.ticker + '</span></div></div></div>' +
           '<div class="price-row"><span class="price">' + stock.price.toLocaleString('ja-JP', {{minimumFractionDigits: 1, maximumFractionDigits: 1}}) +
           '<span class="yen">円</span></span>' +
           '<span class="change ' + changeCls + '">' + fmtPct(stock.change_pct) + '</span></div>' +
           '<a class="tv-link" href="https://www.tradingview.com/symbols/TSE-' + code + '/" target="_blank" rel="noopener noreferrer">' +
           '📈 TradingViewでリアルタイムチャートを見る</a>' +
+          '<p class="search-pick-hint">チェックを入れると「選んだ銘柄でポートフォリオ」タブに追加されます</p>' +
           '</div>';
+        var cb = detailEl.querySelector('.pick-checkbox');
+        if (cb && window.wirePickCheckbox) window.wirePickCheckbox(cb);
       }}
 
       function render(query) {{
@@ -2678,6 +2685,12 @@ header.app-header {{
   background: var(--surface);
 }}
 
+.search-pick-hint {{
+  margin: 8px 0 0;
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}}
+
 .sparkline {{
   margin-top: 10px;
 }}
@@ -3485,9 +3498,10 @@ footer.disclaimer {{
     }});
   }}
 
-  var existingPicks = getPicks();
-  document.querySelectorAll('.pick-checkbox').forEach(function (cb) {{
-    if (existingPicks[cb.dataset.ticker]) cb.checked = true;
+  // チェックボックスへのイベント登録をまとめた関数。ページ読み込み時のカードだけでなく、
+  // 検索窓であとから動的に追加されるチェックボックスにも同じ仕組みを使えるようにwindowに公開する。
+  function wireCheckbox(cb) {{
+    if (getPicks()[cb.dataset.ticker]) cb.checked = true;
     cb.addEventListener('change', function () {{
       var picks = getPicks();
       if (cb.checked) {{
@@ -3504,7 +3518,11 @@ footer.disclaimer {{
       renderSelectedPortfolio();
       renderGrowthPlan();
     }});
-  }});
+  }}
+  window.wirePickCheckbox = wireCheckbox;
+  window.isPicked = function (ticker) {{ return !!getPicks()[ticker]; }};
+
+  document.querySelectorAll('.pick-checkbox').forEach(wireCheckbox);
 
   updatePickedCount();
   renderSelectedPortfolio();
