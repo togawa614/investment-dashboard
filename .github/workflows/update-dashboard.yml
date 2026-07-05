@@ -1,0 +1,61 @@
+name: ダッシュボード自動更新
+
+# 実行タイミング
+# 1. 毎営業日 15:35(日本時間) = 06:35(UTC) に自動実行（日本株の取引終了後）
+# 2. GitHubの画面から手動でも実行できる（Actionsタブ→このワークフロー→Run workflow）
+on:
+  schedule:
+    - cron: "35 6 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 必要なライブラリをインストール
+        working-directory: scripts
+        run: pip install -r requirements.txt
+
+      - name: ダッシュボードを生成（公開ビルド・保有銘柄情報は含めない）
+        working-directory: scripts
+        env:
+          PUBLIC_BUILD: "1"
+        run: python dashboard.py
+
+      - name: 公開用フォルダを準備
+        run: |
+          mkdir -p public
+          cp scripts/dashboard.html public/index.html
+
+      - name: GitHub Pages用にアップロード
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: GitHub Pagesへ公開
+        id: deployment
+        uses: actions/deploy-pages@v4
