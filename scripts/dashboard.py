@@ -11,6 +11,7 @@
 
 import json
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -119,24 +120,104 @@ def classify_valuation(value, cheap_below, expensive_above):
     return "割高"
 
 
+_JAPANESE_CHAR_RE = re.compile(r"[぀-ヿ一-鿿]")
+
+
 def fetch_latest_headline(ticker):
-    """直近ニュースの見出しを1件取得する（ファンダメンタル判断の「最近の材料」として使う）"""
+    """yfinance経由の直近ニュース見出しを取得する。日本株はほぼ英語しか付かないため、
+    日本語の見出しが見つかった場合のみ返す（英語ニュースは表示しない）。"""
     try:
         news = yf.Ticker(ticker).news
     except Exception as e:
         print(f"[警告] {ticker} のニュース取得に失敗: {e}")
         return None
-    for item in (news or [])[:3]:
+    for item in (news or [])[:10]:
         if not isinstance(item, dict):
             continue
         title = item.get("title") or item.get("content", {}).get("title")
-        if title:
+        if title and _JAPANESE_CHAR_RE.search(title):
             return title
     return None
 
 
-def build_company_profile(ticker, yf_info):
-    """会社概要（業種・事業内容・従業員数・時価総額・直近決算・PER/PBR・最新ニュース）をまとめる。
+def fetch_yahoo_finance_news(ticker, limit=3):
+    """Yahoo!ファイナンスの銘柄別ニュースページから日本語の見出しを取得する
+    （yfinanceの英語ニュースだけでは不十分なため、日本語ソースを直接利用する）"""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    try:
+        resp = requests.get(
+            f"https://finance.yahoo.co.jp/quote/{ticker}/news",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[警告] {ticker} のYahoo!ファイナンスニュース取得に失敗: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    headings = soup.select('h3[class*="_NewsItem__heading_"]')
+    return [h.get_text(strip=True) for h in headings[:limit] if h.get_text(strip=True)]
+
+
+RECOMMENDATION_JA = {
+    "strong_buy": "強気の買い",
+    "buy": "買い",
+    "hold": "中立",
+    "underperform": "弱気",
+    "sell": "売り",
+    "none": "評価なし",
+}
+
+
+def build_pro_fundamentals(yf_info, current_price):
+    """機関投資家が見るような収益性・財務健全性・アナリスト評価の指標をまとめる（プロ向けファンダメンタル分析）"""
+
+    def pct(key):
+        v = yf_info.get(key)
+        return None if v is None else v * 100
+
+    roe = pct("returnOnEquity")
+    roa = pct("returnOnAssets")
+    operating_margin = pct("operatingMargins")
+    profit_margin = pct("profitMargins")
+    debt_to_equity = yf_info.get("debtToEquity")  # 既に%表記
+    dividend_yield = yf_info.get("dividendYield")  # 既に%表記
+    peg = yf_info.get("pegRatio")
+    current_ratio = yf_info.get("currentRatio")
+    target_mean = yf_info.get("targetMeanPrice")
+    num_analysts = yf_info.get("numberOfAnalystOpinions")
+    recommendation = RECOMMENDATION_JA.get(yf_info.get("recommendationKey"), "不明")
+    free_cashflow = yf_info.get("freeCashflow")
+
+    target_gap_pct = None
+    if target_mean and current_price:
+        target_gap_pct = (target_mean - current_price) / current_price * 100
+
+    return {
+        "roe": roe,
+        "roa": roa,
+        "operating_margin": operating_margin,
+        "profit_margin": profit_margin,
+        "debt_to_equity": debt_to_equity,
+        "dividend_yield": dividend_yield,
+        "peg": peg,
+        "current_ratio": current_ratio,
+        "target_mean": target_mean,
+        "target_gap_pct": target_gap_pct,
+        "num_analysts": num_analysts,
+        "recommendation": recommendation,
+        "free_cashflow": free_cashflow,
+    }
+
+
+def build_company_profile(ticker, yf_info, price):
+    """会社概要（業種・事業内容・従業員数・時価総額・直近決算・PER/PBR・プロ向け指標・日本語ニュース）をまとめる。
     事業内容は必ず日本語で表示する。"""
     sector_en = yf_info.get("sector")
     sector_ja = config.SECTOR_JA.get(sector_en, sector_en)
@@ -153,6 +234,11 @@ def build_company_profile(ticker, yf_info):
     per = yf_info.get("trailingPE")
     pbr = yf_info.get("priceToBook")
 
+    news_headlines = fetch_yahoo_finance_news(ticker, limit=3)
+    if not news_headlines:
+        fallback = fetch_latest_headline(ticker)
+        news_headlines = [fallback] if fallback else []
+
     return {
         "sector": sector_ja,
         "industry": industry_ja,
@@ -165,7 +251,8 @@ def build_company_profile(ticker, yf_info):
         "pbr": pbr,
         "per_tag": classify_valuation(per, cheap_below=15, expensive_above=25),
         "pbr_tag": classify_valuation(pbr, cheap_below=1, expensive_above=3),
-        "latest_headline": fetch_latest_headline(ticker),
+        "news_headlines": news_headlines,
+        "pro": build_pro_fundamentals(yf_info, price),
     }
 
 
@@ -242,7 +329,7 @@ def analyze_ticker(ticker, positions, benchmark_returns=None):
     graham_gap_pct = None
     if graham_price:
         graham_gap_pct = (price - graham_price) / graham_price * 100
-    profile = build_company_profile(ticker, yf_info)
+    profile = build_company_profile(ticker, yf_info, price)
     days_to_profit = estimate_days_to_target(df, config.TAKE_PROFIT_PCT)
 
     info = {
@@ -480,13 +567,21 @@ def describe_fundamentals(info):
             val_bits.append(f"PBR{pbr:.2f}倍（{profile.get('pbr_tag')}）")
         parts.append("、".join(val_bits))
 
+    pro = profile.get("pro") or {}
+    if pro.get("roe") is not None:
+        parts.append(f"ROE(自己資本利益率){pro['roe']:.1f}%")
+    if pro.get("recommendation") and pro.get("num_analysts"):
+        parts.append(f"アナリスト評価は「{pro['recommendation']}」（{pro['num_analysts']}人平均）")
+    if pro.get("target_gap_pct") is not None:
+        parts.append(f"アナリスト目標株価は現在値より{pro['target_gap_pct']:+.0f}%")
+
     sector = profile.get("sector")
     if sector:
         parts.append(f"業種は{sector}")
 
-    headline = profile.get("latest_headline")
-    if headline:
-        parts.append(f'最近のニュース: 「{headline}」')
+    headlines = profile.get("news_headlines") or []
+    if headlines:
+        parts.append(f'最近のニュース: 「{headlines[0]}」')
 
     return "、".join(parts) + "。"
 
@@ -839,8 +934,67 @@ def render_financials_table(rows):
     """
 
 
+def render_pro_fundamentals(pro):
+    """ROE・ROA・利益率・財務健全性・アナリスト評価など、プロが見る指標をまとめて表示する"""
+    if not pro:
+        return ""
+
+    def pctcell(v):
+        return f"{v:.1f}%" if v is not None else "-"
+
+    roe = pctcell(pro.get("roe"))
+    roa = pctcell(pro.get("roa"))
+    op_margin = pctcell(pro.get("operating_margin"))
+    profit_margin = pctcell(pro.get("profit_margin"))
+    dte = f"{pro['debt_to_equity']:.0f}%" if pro.get("debt_to_equity") is not None else "-"
+    div_yield = f"{pro['dividend_yield']:.2f}%" if pro.get("dividend_yield") is not None else "配当なし/不明"
+    peg = f"{pro['peg']:.2f}" if pro.get("peg") is not None else "-"
+    current_ratio = f"{pro['current_ratio']:.2f}" if pro.get("current_ratio") is not None else "-"
+    fcf = fmt_market_cap(pro.get("free_cashflow")) if pro.get("free_cashflow") is not None else "-"
+    if pro.get("free_cashflow") is not None and pro["free_cashflow"] < 0:
+        fcf = f"-{fcf}"
+
+    target_html = ""
+    if pro.get("target_mean") is not None:
+        gap = pro.get("target_gap_pct")
+        gap_html = f'<span class="{"rise" if gap and gap >= 0 else "fall"}">（現在値より{gap:+.0f}%）</span>' if gap is not None else ""
+        target_html = f"<span>アナリスト目標株価: {pro['target_mean']:,.0f}円{gap_html}</span>"
+
+    rec_html = ""
+    if pro.get("recommendation") and pro.get("recommendation") != "不明":
+        n = pro.get("num_analysts")
+        n_txt = f"（アナリスト{n}人）" if n else ""
+        rec_html = f"<span>アナリスト評価: <strong>{pro['recommendation']}</strong>{n_txt}</span>"
+
+    return f"""
+    <p class="financials-title">📊 プロ向け指標（収益性・財務健全性・アナリスト評価）</p>
+    <div class="pro-fund-grid">
+      <div><span class="quant-label">ROE（自己資本利益率）</span><span class="quant-value">{roe}</span></div>
+      <div><span class="quant-label">ROA（総資産利益率）</span><span class="quant-value">{roa}</span></div>
+      <div><span class="quant-label">営業利益率</span><span class="quant-value">{op_margin}</span></div>
+      <div><span class="quant-label">純利益率</span><span class="quant-value">{profit_margin}</span></div>
+      <div><span class="quant-label">負債比率（対自己資本）</span><span class="quant-value">{dte}</span></div>
+      <div><span class="quant-label">配当利回り</span><span class="quant-value">{div_yield}</span></div>
+      <div><span class="quant-label">PEGレシオ</span><span class="quant-value">{peg}</span></div>
+      <div><span class="quant-label">流動比率</span><span class="quant-value">{current_ratio}</span></div>
+      <div><span class="quant-label">フリーCF</span><span class="quant-value">{fcf}</span></div>
+    </div>
+    <div class="profile-facts">
+      {target_html}
+      {rec_html}
+    </div>
+    """
+
+
+def render_news_headlines(headlines):
+    if not headlines:
+        return '<p class="profile-summary-muted">関連ニュースは見つかりませんでした。</p>'
+    items = "".join(f"<li>{h}</li>" for h in headlines)
+    return f'<ul class="news-list">{items}</ul>'
+
+
 def render_company_profile(info):
-    """会社概要（業種・事業内容・時価総額・従業員数・直近決算）をタップで開ける形で表示する。
+    """会社概要（業種・事業内容・時価総額・従業員数・直近決算・プロ向け指標・関連ニュース）をタップで開ける形で表示する。
     事業内容は必ず日本語（未翻訳の銘柄は業種・数値情報のみ）で表示する。"""
     profile = info.get("profile") or {}
     sector = profile.get("sector") or "不明"
@@ -879,8 +1033,11 @@ def render_company_profile(info):
         <span>PBR: {pbr_txt} <span class="valuation-tag {pbr_tag_cls}">{profile.get('pbr_tag', '算出不可')}</span></span>
       </div>
       {summary_html}
+      {render_pro_fundamentals(profile.get("pro"))}
       <p class="financials-title">直近3期の決算</p>
       {render_financials_table(profile.get("financials"))}
+      <p class="financials-title">📰 関連ニュース（Yahoo!ファイナンス）</p>
+      {render_news_headlines(profile.get("news_headlines"))}
     </details>
     """
 
@@ -1406,6 +1563,30 @@ header.app-header {{
   font-weight: 700;
   color: var(--accent);
 }}
+
+.growth-plan-feasibility {{
+  margin-top: 8px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}}
+
+.growth-plan-feasibility p {{
+  margin: 0 0 4px;
+}}
+
+.feasibility-tag {{
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-bottom: 4px;
+}}
+
+.feasibility-ok {{ background: color-mix(in srgb, var(--buy) 20%, var(--surface)); color: var(--buy); }}
+.feasibility-hard {{ background: var(--surface-2); color: var(--text-secondary); }}
+.feasibility-unrealistic {{ background: color-mix(in srgb, var(--sell) 20%, var(--surface)); color: var(--sell); }}
 
 .growth-plan-note {{
   margin: 6px 0 0;
@@ -2118,6 +2299,31 @@ header.app-header {{
   gap: 2px;
 }}
 
+.pro-fund-grid {{
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 6px 0 8px;
+}}
+
+.pro-fund-grid > div {{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}}
+
+.news-list {{
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}}
+
+.news-list li {{
+  margin-bottom: 3px;
+}}
+
 .quant-value {{
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -2230,6 +2436,7 @@ footer.disclaimer {{
       <div id="growth-plan-chart"></div>
       <p id="growth-plan-summary" class="growth-plan-summary"></p>
       <div id="growth-plan-feasibility" class="growth-plan-feasibility"></div>
+      <div id="growth-plan-achieve" class="growth-plan-feasibility"></div>
       <p class="growth-plan-note">これは「目標に届くには何%ペースの成長が必要か」を単純な複利計算で可視化したものです。
         実際に到達する保証はありません。上の予算・銘柄の利確目安と見比べて、現実的かどうかの参考にしてください。</p>
     </div>
@@ -2438,6 +2645,41 @@ footer.disclaimer {{
     return {{ allocations: allocations, remaining: remaining, excluded: excluded }};
   }}
 
+  function getActivePortfolioStats(budget) {{
+    // 「選んだ銘柄」があればそちらを優先し、なければおすすめポートフォリオで代用する
+    var picks = getPicks();
+    var tickers = Object.keys(picks);
+    if (tickers.length) {{
+      var totalCost = 0, totalProfit = 0, weightedDaysSum = 0, count = 0;
+      tickers.forEach(function (t) {{
+        var c = candidateData.filter(function (x) {{ return x.ticker === t; }})[0];
+        var price = c ? c.price : picks[t].price;
+        var daysToProfit = c ? c.daysToProfit : null;
+        if (!price || !daysToProfit || daysToProfit <= 0) return;
+        var cost = price * 100;
+        totalCost += cost;
+        totalProfit += cost * TAKE_PROFIT_PCT;
+        weightedDaysSum += daysToProfit * cost;
+        count += 1;
+      }});
+      if (count > 0) {{
+        return {{ source: 'selected', totalCost: totalCost, totalProfit: totalProfit, weightedDays: weightedDaysSum / totalCost, count: count }};
+      }}
+    }}
+    var result = computePortfolio(budget);
+    if (result.allocations.length) {{
+      var tc = 0, tp = 0, wd = 0;
+      result.allocations.forEach(function (a) {{
+        var cost = a.lots * a.price * 100;
+        tc += cost;
+        tp += cost * TAKE_PROFIT_PCT;
+        wd += a.daysToProfit * cost;
+      }});
+      return {{ source: 'recommended', totalCost: tc, totalProfit: tp, weightedDays: tc > 0 ? wd / tc : 0, count: result.allocations.length }};
+    }}
+    return null;
+  }}
+
   function renderPortfolio() {{
     var budget = parseFloat(budgetInput.value) || 0;
     if (!candidateData.length) {{
@@ -2452,10 +2694,15 @@ footer.disclaimer {{
     }}
     var rows = '';
     var totalCost = 0;
+    var totalProfit = 0;
+    var weightedDaysSum = 0;
     result.allocations.forEach(function (a) {{
       var shares = a.lots * 100;
       var cost = a.lots * a.price * 100;
+      var profit = cost * TAKE_PROFIT_PCT;
       totalCost += cost;
+      totalProfit += profit;
+      weightedDaysSum += a.daysToProfit * cost;
       rows += '<div class="portfolio-row">' +
         '<span class="portfolio-name">' + a.name + '<span class="ticker">' + a.ticker + '</span>' +
         '<span class="quadrant-tag">' + a.timeLabel + '×' + a.powerLabel + '</span></span>' +
@@ -2464,8 +2711,21 @@ footer.disclaimer {{
         '<div class="portfolio-reason">' +
         '<span class="portfolio-reason-label">テクニカル</span>' + technicalNote(a) + '</div>' +
         '<div class="portfolio-reason">' +
-        '<span class="portfolio-reason-label">ファンダ</span>' + fundamentalNote(a) + '</div>';
+        '<span class="portfolio-reason-label">ファンダ</span>' + fundamentalNote(a) + '</div>' +
+        '<div class="portfolio-reason">' +
+        '<span class="portfolio-reason-label">見込み</span>約' + a.daysToProfit.toFixed(0) + '営業日で+' + yen(profit) + '円の目安</div>';
     }});
+
+    var weightedDays = totalCost > 0 ? weightedDaysSum / totalCost : 0;
+    var chartHtml = '';
+    if (totalCost > 0 && totalProfit > 0 && weightedDays > 0) {{
+      var built = buildGrowthSvg(totalCost, totalCost + totalProfit, weightedDays, 'var(--rise)');
+      chartHtml = '<div class="sparkline">' + built.svg +
+        '<div class="sparkline-caption"><span>投資額 ' + yen(totalCost) + '円</span>' +
+        '<span>約' + weightedDays.toFixed(0) + '営業日後 ' + yen(totalCost + totalProfit) + '円（全銘柄利確想定）</span></div></div>';
+    }}
+
+    rows = chartHtml + rows;
     rows += '<div class="portfolio-row portfolio-total">' +
       '<span>合計</span><span>' + yen(totalCost) + '円（残り現金 ' + yen(result.remaining) + '円）</span></div>';
 
@@ -2489,52 +2749,117 @@ footer.disclaimer {{
   var growthChartEl = document.getElementById('growth-plan-chart');
   var growthSummaryEl = document.getElementById('growth-plan-summary');
 
-  function renderGrowthPlan() {{
-    if (!growthChartEl || !growthSummaryEl) return;
-    var start = parseFloat(budgetInput.value) || 0;
-    var target = parseFloat(targetAmountInput.value) || 0;
-    var days = parseFloat(targetDaysInput.value) || 0;
-
-    if (start <= 0 || target <= start || days <= 0) {{
-      growthChartEl.innerHTML = '';
-      growthSummaryEl.textContent = '予算・目標金額・日数を正しく入力してください（目標は予算より大きい金額）。';
-      return;
-    }}
-
-    var dailyRate = Math.pow(target / start, 1 / days) - 1;
+  function buildGrowthSvg(start, target, days, color) {{
     var width = 320, height = 100, padX = 6, padY = 12;
+    var dailyRate = Math.pow(target / start, 1 / days) - 1;
+    var n = Math.min(Math.max(Math.round(days), 1), 60);
     var points = [];
-    var n = Math.min(days, 60);
     for (var i = 0; i <= n; i++) {{
       var d = (days / n) * i;
-      var value = start * Math.pow(1 + dailyRate, d);
-      points.push(value);
+      points.push(start * Math.pow(1 + dailyRate, d));
     }}
     var lo = Math.min.apply(null, points);
     var hi = Math.max.apply(null, points);
     var span = (hi - lo) || 1;
     var step = (width - 2 * padX) / n;
     var coords = points.map(function (v, i) {{
-      var x = padX + i * step;
-      var y = height - padY - (v - lo) / span * (height - 2 * padY);
-      return [x, y];
+      return [padX + i * step, height - padY - (v - lo) / span * (height - 2 * padY)];
     }});
     var pathD = 'M ' + coords.map(function (p) {{ return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }}).join(' L ');
     var areaD = pathD + ' L ' + coords[coords.length - 1][0].toFixed(1) + ' ' + (height - padY) +
       ' L ' + coords[0][0].toFixed(1) + ' ' + (height - padY) + ' Z';
     var last = coords[coords.length - 1];
+    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" width="100%" height="' + height +
+      '" preserveAspectRatio="none" role="img" aria-label="想定成長曲線">' +
+      '<path d="' + areaD + '" fill="' + color + '" opacity="0.12" stroke="none" />' +
+      '<path d="' + pathD + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />' +
+      '<circle cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="3.2" fill="' + color + '" stroke="var(--surface)" stroke-width="1.5" />' +
+      '</svg>';
+    return {{ svg: svg, dailyRate: dailyRate }};
+  }}
 
-    growthChartEl.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" width="100%" height="' + height +
-      '" preserveAspectRatio="none" role="img" aria-label="目標到達までの想定成長曲線">' +
-      '<path d="' + areaD + '" fill="var(--accent)" opacity="0.12" stroke="none" />' +
-      '<path d="' + pathD + '" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />' +
-      '<circle cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="3.2" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5" />' +
-      '</svg>' +
+  function bestAchievableDailyRate() {{
+    if (!candidateData.length) return null;
+    var rates = candidateData
+      .filter(function (c) {{ return c.daysToProfit > 0; }})
+      .map(function (c) {{ return Math.pow(1 + TAKE_PROFIT_PCT, 1 / c.daysToProfit) - 1; }});
+    return rates.length ? Math.max.apply(null, rates) : null;
+  }}
+
+  function renderGrowthPlan() {{
+    if (!growthChartEl || !growthSummaryEl) return;
+    var start = parseFloat(budgetInput.value) || 0;
+    var target = parseFloat(targetAmountInput.value) || 0;
+    var days = parseFloat(targetDaysInput.value) || 0;
+    var feasEl = document.getElementById('growth-plan-feasibility');
+
+    if (start <= 0 || target <= start || days <= 0) {{
+      growthChartEl.innerHTML = '';
+      growthSummaryEl.textContent = '予算・目標金額・日数を正しく入力してください（目標は予算より大きい金額）。';
+      if (feasEl) feasEl.innerHTML = '';
+      return;
+    }}
+
+    var built = buildGrowthSvg(start, target, days, 'var(--accent)');
+    growthChartEl.innerHTML = built.svg +
       '<div class="sparkline-caption"><span>今日 ' + yen(start) + '円</span><span>' + days + '営業日後 ' + yen(target) + '円</span></div>';
 
-    var dailyPct = (dailyRate * 100).toFixed(2);
-    var weeklyPct = ((Math.pow(1 + dailyRate, 5) - 1) * 100).toFixed(1);
+    var dailyPct = (built.dailyRate * 100).toFixed(2);
+    var weeklyPct = ((Math.pow(1 + built.dailyRate, 5) - 1) * 100).toFixed(1);
     growthSummaryEl.textContent = '必要なペース: 1営業日あたり平均+' + dailyPct + '%（週あたり+' + weeklyPct + '%相当）の複利成長';
+
+    if (feasEl) {{
+      var bestRate = bestAchievableDailyRate();
+      var html;
+      if (bestRate === null) {{
+        html = '<p>比較できる候補データがありません。</p>';
+      }} else if (built.dailyRate <= bestRate * 0.5) {{
+        html = '<p class="feasibility-tag feasibility-ok">現実的な範囲</p>' +
+          '<p>現在見つかっている候補の最速ペース（1日あたり+' + (bestRate * 100).toFixed(2) + '%相当）の半分以下で済むペースです。' +
+          '「短期×がっつり」型を中心に、上のポートフォリオ通り複数銘柄に分散すれば狙える可能性があります。</p>';
+      }} else if (built.dailyRate <= bestRate) {{
+        html = '<p class="feasibility-tag feasibility-hard">かなり強気</p>' +
+          '<p>現在見つかっている最有力候補（1日あたり+' + (bestRate * 100).toFixed(2) + '%相当）とほぼ同じか、それ以上のペースが必要です。' +
+          '1銘柄の保有だけでなく、利確ラインに届いたら即座に利益確定→次の「短期×がっつり」候補に乗り換える、を繰り返す' +
+          '短期集中売買（数日単位のスイング〜デイトレード）が前提になります。</p>';
+      }} else {{
+        html = '<p class="feasibility-tag feasibility-unrealistic">非常に困難</p>' +
+          '<p>現在見つかっている候補の最速ペース（1日あたり+' + (bestRate * 100).toFixed(2) + '%相当）を上回っており、' +
+          '通常の「買って様子見」ではまず届きません。狙うなら、値動きの荒い銘柄でデイトレード（1日の中で売買を完結させる）を' +
+          '繰り返して小さな利益を積み重ねる以外に現実的な道はほぼなく、それでも損失リスクは非常に高い点に注意してください。' +
+          '目標を下げる、または期間を延ばすことも検討してください。</p>';
+      }}
+      feasEl.innerHTML = html;
+    }}
+
+    var achieveEl = document.getElementById('growth-plan-achieve');
+    if (achieveEl) {{
+      var stats = getActivePortfolioStats(start);
+      if (!stats || stats.totalCost <= 0 || stats.weightedDays <= 0) {{
+        achieveEl.innerHTML = '<p>比較できるポートフォリオがありません（品質ゲートを満たす候補がないか、まだ銘柄を選んでいません）。</p>';
+      }} else {{
+        var portfolioDailyRate = Math.pow((stats.totalCost + stats.totalProfit) / stats.totalCost, 1 / stats.weightedDays) - 1;
+        var projected = stats.totalCost * Math.pow(1 + portfolioDailyRate, days);
+        var sourceLabel = stats.source === 'selected'
+          ? '選んだ' + stats.count + '銘柄'
+          : 'おすすめポートフォリオ（' + stats.count + '銘柄、未選択のため自動計算分）';
+        if (projected >= target) {{
+          achieveEl.innerHTML = '<p class="feasibility-tag feasibility-ok">' + sourceLabel + 'なら達成できる可能性あり</p>' +
+            '<p>このペース（1日あたり+' + (portfolioDailyRate * 100).toFixed(2) + '%相当）が続けば、' + days + '営業日後には約' +
+            yen(projected) + '円が見込め、目標' + yen(target) + '円に届く計算です。</p>';
+        }} else {{
+          var shortfall = target - projected;
+          var neededDays = portfolioDailyRate > 0 ? Math.log(target / stats.totalCost) / Math.log(1 + portfolioDailyRate) : null;
+          var daysAdvice = (neededDays && neededDays > 0 && isFinite(neededDays))
+            ? '(1) 期間を約' + Math.ceil(neededDays) + '営業日まで延ばす、'
+            : '(1) このペースでは期間を延ばしても届かないため銘柄構成を見直す、';
+          achieveEl.innerHTML = '<p class="feasibility-tag feasibility-hard">' + sourceLabel + 'のペースでは不足</p>' +
+            '<p>このペースだと' + days + '営業日後は約' + yen(projected) + '円の見込みで、目標まであと' + yen(shortfall) + '円足りません。' +
+            '対策: ' + daysAdvice + '(2) 予算を増やして購入株数を増やす、(3) 上の「短期×がっつり」型の銘柄比率を増やす、' +
+            'のいずれかが考えられます。</p>';
+        }}
+      }}
+    }}
   }}
 
   function recalcAll() {{
@@ -2636,6 +2961,7 @@ footer.disclaimer {{
         if (cb) cb.checked = false;
         updatePickedCount();
         renderSelectedPortfolio();
+        renderGrowthPlan();
       }});
     }});
   }}
@@ -2657,6 +2983,7 @@ footer.disclaimer {{
       savePicks(picks);
       updatePickedCount();
       renderSelectedPortfolio();
+      renderGrowthPlan();
     }});
   }});
 
