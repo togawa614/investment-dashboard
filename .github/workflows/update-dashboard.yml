@@ -1,13 +1,14 @@
 name: ダッシュボード自動更新
 
-# 実行タイミング
-# 1. 東証の取引時間中（9:00〜15:30、日本時間） = 0:00〜6:30(UTC)の間、平日5分おきに自動実行
-#    （昼休み11:30〜12:30も含めて回すが、その間は株価が動かないだけで無害）
-# 2. GitHubの画面から手動でも実行できる（Actionsタブ→このワークフロー→Run workflow）
+# 実行タイミング（東証の取引時間 9:00〜15:30 日本時間 = 0:00〜6:30 UTC の間、平日のみ）
+# 1. 30分おき: ウォッチリスト銘柄の詳細ダッシュボードを更新
+# 2. 2時間おき（9:01, 11:01, 13:01, 15:01 日本時間）: 東証上場の内国株式ほぼ全銘柄
+#    （プライム・スタンダード・グロース、約3,700銘柄）を対象にした買い候補スキャンも実行
+# 3. GitHubの画面から手動でも実行できる（Actionsタブ→このワークフロー→Run workflow）
 on:
   schedule:
-    - cron: "*/5 0-5 * * 1-5"
-    - cron: "0,5,10,15,20,25,30 6 * * 1-5"
+    - cron: "*/30 0-6 * * 1-5"
+    - cron: "1 0,2,4,6 * * 1-5"
   workflow_dispatch: {}
 
 permissions:
@@ -34,6 +35,41 @@ jobs:
       - name: 必要なライブラリをインストール
         working-directory: scripts
         run: pip install -r requirements.txt
+
+      - name: 全銘柄スキャンを実行するタイミングか判定
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_scan=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "1 0,2,4,6 * * 1-5" ]; then
+            echo "run_scan=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_scan=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 前回の全銘柄スキャン結果・銘柄一覧をキャッシュから復元
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            scripts/data_j.xls
+            scripts/market_candidates.json
+          key: market-scan-${{ github.run_id }}
+          restore-keys: |
+            market-scan-
+
+      - name: 全上場銘柄（国内株式ほぼ全て）をスキャン
+        if: steps.decide.outputs.run_scan == 'true'
+        working-directory: scripts
+        run: python market_scan.py
+
+      - name: 全銘柄スキャン結果・銘柄一覧をキャッシュに保存
+        if: steps.decide.outputs.run_scan == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            scripts/data_j.xls
+            scripts/market_candidates.json
+          key: market-scan-${{ github.run_id }}
 
       - name: ダッシュボードを生成（公開ビルド・保有銘柄情報は含めない）
         working-directory: scripts
