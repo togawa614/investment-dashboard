@@ -11,6 +11,7 @@
 
 import json
 import math
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -3084,7 +3085,12 @@ def load_market_scan_results(positions, benchmark_returns):
 
 
 def generate_dashboard():
-    positions = load_positions()
+    # PUBLIC_BUILD=1 はGitHub Pages公開用のビルド（誰でも見られる）を意味する。
+    # 保有銘柄の取得価格・含み損益は個人情報なので、公開ビルドでは常に「未保有」として扱う。
+    if os.environ.get("PUBLIC_BUILD") == "1":
+        positions = {}
+    else:
+        positions = load_positions()
     benchmark_returns = fetch_benchmark_returns()
     results = [analyze_ticker(ticker, positions, benchmark_returns) for ticker in config.WATCHLIST]
     market_finds, scan_meta = load_market_scan_results(positions, benchmark_returns)

@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 scripts/data_j.xls
 scripts/dashboard.html
+scripts/positions.json
+public/
