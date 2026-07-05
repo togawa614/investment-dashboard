@@ -140,8 +140,33 @@ def fetch_latest_headline(ticker):
     return None
 
 
+YAHOO_FINANCE_BASE = "https://finance.yahoo.co.jp"
+
+# 見出しに含まれるキーワードから、株価への影響を機械的に推測するための簡易辞書
+# （見出しだけからの単純なキーワード判定であり、内容の正確な理解ではない点に注意）
+NEWS_NEGATIVE_KEYWORDS = [
+    "減益", "減収", "下方修正", "赤字", "損失", "訴訟", "規制強化", "上場廃止",
+    "不正", "リコール", "経営破綻", "希薄化", "特別損失", "業績悪化", "自己破産",
+]
+NEWS_POSITIVE_KEYWORDS = [
+    "増益", "増収", "上方修正", "最高益", "黒字転換", "提携", "自社株買い",
+    "好調", "受注拡大", "増配", "上場来高値", "業務提携", "新製品",
+]
+
+
+def analyze_news_impact(title):
+    """見出しのキーワードから、株価への影響の考え方を短くまとめる（内容の深い理解ではなく機械的な判定）"""
+    for kw in NEWS_NEGATIVE_KEYWORDS:
+        if kw in title:
+            return f"「{kw}」に関する内容。一般的にはマイナス材料になりやすい傾向。"
+    for kw in NEWS_POSITIVE_KEYWORDS:
+        if kw in title:
+            return f"「{kw}」に関する内容。一般的にはプラス材料になりやすい傾向。"
+    return "見出しだけではこの銘柄固有の株価材料かどうか判断できません。内容を確認してください。"
+
+
 def fetch_yahoo_finance_news(ticker, limit=3):
-    """Yahoo!ファイナンスの銘柄別ニュースページから日本語の見出しを取得する
+    """Yahoo!ファイナンスの銘柄別ニュースページから日本語の見出し・リンク・影響考察を取得する
     （yfinanceの英語ニュースだけでは不十分なため、日本語ソースを直接利用する）"""
     try:
         import requests
@@ -151,7 +176,7 @@ def fetch_yahoo_finance_news(ticker, limit=3):
 
     try:
         resp = requests.get(
-            f"https://finance.yahoo.co.jp/quote/{ticker}/news",
+            f"{YAHOO_FINANCE_BASE}/quote/{ticker}/news",
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=10,
         )
@@ -162,7 +187,17 @@ def fetch_yahoo_finance_news(ticker, limit=3):
 
     soup = BeautifulSoup(resp.text, "html.parser")
     headings = soup.select('h3[class*="_NewsItem__heading_"]')
-    return [h.get_text(strip=True) for h in headings[:limit] if h.get_text(strip=True)]
+
+    results = []
+    for h in headings[:limit]:
+        title = h.get_text(strip=True)
+        if not title:
+            continue
+        link_tag = h.find_parent("a")
+        href = link_tag.get("href") if link_tag else None
+        url = (YAHOO_FINANCE_BASE + href) if href and href.startswith("/") else href
+        results.append({"title": title, "url": url, "impact": analyze_news_impact(title)})
+    return results
 
 
 RECOMMENDATION_JA = {
@@ -237,7 +272,7 @@ def build_company_profile(ticker, yf_info, price):
     news_headlines = fetch_yahoo_finance_news(ticker, limit=3)
     if not news_headlines:
         fallback = fetch_latest_headline(ticker)
-        news_headlines = [fallback] if fallback else []
+        news_headlines = [{"title": fallback, "url": None, "impact": analyze_news_impact(fallback)}] if fallback else []
 
     return {
         "sector": sector_ja,
@@ -581,7 +616,7 @@ def describe_fundamentals(info):
 
     headlines = profile.get("news_headlines") or []
     if headlines:
-        parts.append(f'最近のニュース: 「{headlines[0]}」')
+        parts.append(f'最近のニュース: 「{headlines[0]["title"]}」（{headlines[0]["impact"]}）')
 
     return "、".join(parts) + "。"
 
@@ -989,7 +1024,14 @@ def render_pro_fundamentals(pro):
 def render_news_headlines(headlines):
     if not headlines:
         return '<p class="profile-summary-muted">関連ニュースは見つかりませんでした。</p>'
-    items = "".join(f"<li>{h}</li>" for h in headlines)
+
+    items = ""
+    for h in headlines:
+        title = h["title"]
+        url = h.get("url")
+        impact = h.get("impact", "")
+        title_html = f'<a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>' if url else title
+        items += f'<li>{title_html}<div class="news-impact">💡 {impact}</div></li>'
     return f'<ul class="news-list">{items}</ul>'
 
 
@@ -2321,7 +2363,18 @@ header.app-header {{
 }}
 
 .news-list li {{
-  margin-bottom: 3px;
+  margin-bottom: 8px;
+}}
+
+.news-list a {{
+  color: var(--accent);
+  text-decoration: underline;
+}}
+
+.news-impact {{
+  margin-top: 2px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
 }}
 
 .quant-value {{
