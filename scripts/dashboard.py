@@ -908,43 +908,14 @@ def render_quant(info):
     """
 
 
-def to_tradingview_symbol(ticker):
-    """yfinance形式のティッカー（例: 6857.T）をTradingViewのシンボル形式（例: TSE:6857）に変換する"""
-    code = ticker.replace(".T", "")
-    return f"TSE:{code}"
-
-
 def render_tradingview_widget(ticker):
     """TradingView社が無料公開している埋め込みウィジェットで、本物のリアルタイムチャートを表示する。
     ページを開いている間、TradingView側から直接ライブの値動きが流れてくる（当サイトのデータ取得とは無関係）。
     ダークモード/ライトモードは、このページの配色設定(data-theme)に合わせて自動で切り替える。"""
-    symbol = to_tradingview_symbol(ticker)
     widget_id = "tv_" + re.sub(r"[^a-zA-Z0-9]", "_", ticker)
     return f"""
     <div class="tv-widget-container" id="{widget_id}"></div>
-    <script>
-    (function() {{
-      var root = document.documentElement;
-      var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      var forced = root.getAttribute('data-theme');
-      if (forced === 'dark' || forced === 'light') theme = forced;
-      var el = document.getElementById('{widget_id}');
-      var s = document.createElement('script');
-      s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
-      s.async = true;
-      s.text = JSON.stringify({{
-        symbol: '{symbol}',
-        width: '100%',
-        height: 160,
-        locale: 'ja',
-        dateRange: '1D',
-        colorTheme: theme,
-        isTransparent: true,
-        autosize: true
-      }});
-      el.appendChild(s);
-    }})();
-    </script>
+    <script>window.embedTVWidget('{widget_id}', '{ticker}', 160);</script>
     """
 
 
@@ -1373,6 +1344,31 @@ def render_search_section(all_stocks):
     </section>
     <script id="all-stocks-data" type="application/json">{stocks_json}</script>
     <script>
+    // ページ内のどこからでも呼べる共通関数: 指定した要素にTradingViewのライブチャートを埋め込む
+    window.embedTVWidget = function(containerId, ticker, height) {{
+      var code = ticker.replace('.T', '');
+      var root = document.documentElement;
+      var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      var forced = root.getAttribute('data-theme');
+      if (forced === 'dark' || forced === 'light') theme = forced;
+      var el = document.getElementById(containerId);
+      if (!el) return;
+      var s = document.createElement('script');
+      s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
+      s.async = true;
+      s.text = JSON.stringify({{
+        symbol: 'TSE:' + code,
+        width: '100%',
+        height: height || 160,
+        locale: 'ja',
+        dateRange: '1D',
+        colorTheme: theme,
+        isTransparent: true,
+        autosize: true
+      }});
+      el.appendChild(s);
+    }};
+
     (function() {{
       var ALL_STOCKS = JSON.parse(document.getElementById('all-stocks-data').textContent || '[]');
       var input = document.getElementById('stock-search-input');
@@ -1387,8 +1383,7 @@ def render_search_section(all_stocks):
       }}
 
       function showDetail(stock) {{
-        var code = stock.ticker.replace('.T', '');
-        var widgetId = 'tv_search_' + code;
+        var widgetId = 'tv_search_' + stock.ticker.replace('.T', '');
         var changeCls = (stock.change_pct || 0) >= 0 ? 'rise' : 'fall';
         detailEl.innerHTML =
           '<div class="search-detail-card">' +
@@ -1399,26 +1394,7 @@ def render_search_section(all_stocks):
           '<span class="change ' + changeCls + '">' + fmtPct(stock.change_pct) + '</span></div>' +
           '<div class="tv-widget-container" id="' + widgetId + '"></div>' +
           '</div>';
-
-        var root = document.documentElement;
-        var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        var forced = root.getAttribute('data-theme');
-        if (forced === 'dark' || forced === 'light') theme = forced;
-        var el = document.getElementById(widgetId);
-        var s = document.createElement('script');
-        s.src = 'https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js';
-        s.async = true;
-        s.text = JSON.stringify({{
-          symbol: 'TSE:' + code,
-          width: '100%',
-          height: 220,
-          locale: 'ja',
-          dateRange: '1D',
-          colorTheme: theme,
-          isTransparent: true,
-          autosize: true
-        }});
-        el.appendChild(s);
+        window.embedTVWidget(widgetId, stock.ticker, 220);
       }}
 
       function render(query) {{
@@ -1782,6 +1758,91 @@ header.app-header {{
   padding: 2px 8px;
   cursor: pointer;
   flex-shrink: 0;
+}}
+
+.portfolio-summary-stats {{
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}}
+
+.stat-box {{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 4px;
+}}
+
+.stat-value {{
+  font-size: 1.15rem;
+  font-weight: 700;
+}}
+
+.stat-label {{
+  font-size: 0.62rem;
+  color: var(--text-muted);
+}}
+
+.portfolio-compare-chart {{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 14px;
+}}
+
+.compare-row {{
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}}
+
+.compare-row + .compare-row {{
+  border-top: 1px solid var(--border);
+}}
+
+.compare-label {{
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.74rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+
+.compare-bar-track {{
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}}
+
+.compare-bar-fill {{
+  height: 100%;
+  border-radius: 999px;
+}}
+
+.compare-bar-fill.rise {{
+  background: var(--rise);
+}}
+
+.compare-bar-fill.fall {{
+  background: var(--fall);
+}}
+
+.compare-value {{
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
 }}
 
 .growth-plan-zone {{
@@ -3300,20 +3361,70 @@ footer.disclaimer {{
       return;
     }}
 
-    var html = '';
-    tickers.forEach(function (ticker) {{
+    // 各銘柄のチェック時からの変化率を先にまとめて計算(サマリー・比較グラフ・ゲージで使い回す)
+    var rows = tickers.map(function (ticker) {{
       var pick = picks[ticker];
       var checkPrice = pick.price;
       var current = currentPriceFor(ticker);
+      var changePct = current !== null ? ((current - checkPrice) / checkPrice) * 100 : null;
+      return {{ ticker: ticker, pick: pick, checkPrice: checkPrice, current: current, changePct: changePct }};
+    }});
+
+    var withChange = rows.filter(function (r) {{ return r.changePct !== null; }});
+    var upCount = withChange.filter(function (r) {{ return r.changePct >= 0; }}).length;
+    var downCount = withChange.length - upCount;
+    var avgChange = withChange.length
+      ? withChange.reduce(function (sum, r) {{ return sum + r.changePct; }}, 0) / withChange.length
+      : null;
+    var avgCls = avgChange !== null && avgChange >= 0 ? 'rise' : 'fall';
+
+    var summaryHtml = '<div class="portfolio-summary-stats">' +
+      '<div class="stat-box"><span class="stat-value">' + tickers.length + '</span><span class="stat-label">選択中の銘柄</span></div>' +
+      '<div class="stat-box"><span class="stat-value rise">' + upCount + '</span><span class="stat-label">値上がり中</span></div>' +
+      '<div class="stat-box"><span class="stat-value fall">' + downCount + '</span><span class="stat-label">値下がり中</span></div>' +
+      '<div class="stat-box"><span class="stat-value ' + (avgChange !== null ? avgCls : '') + '">' +
+        (avgChange !== null ? (avgChange >= 0 ? '+' : '') + avgChange.toFixed(2) + '%' : '-') +
+        '</span><span class="stat-label">平均変化率</span></div>' +
+      '</div>';
+
+    // 比較バーチャート: 銘柄ごとの変化率を横棒グラフで一覧比較できるようにする
+    var scaleMax = Math.max(20, withChange.reduce(function (m, r) {{ return Math.max(m, Math.abs(r.changePct)); }}, 0));
+    var compareHtml = '';
+    if (withChange.length) {{
+      compareHtml = '<div class="portfolio-compare-chart">' + withChange.map(function (r) {{
+        var cls = r.changePct >= 0 ? 'rise' : 'fall';
+        var widthPct = Math.min(100, (Math.abs(r.changePct) / scaleMax) * 100);
+        return '<div class="compare-row">' +
+          '<span class="compare-label">' + r.pick.name + '<span class="ticker">' + r.ticker + '</span></span>' +
+          '<div class="compare-bar-track"><div class="compare-bar-fill ' + cls + '" style="width:' + widthPct.toFixed(1) + '%"></div></div>' +
+          '<span class="compare-value ' + cls + '">' + (r.changePct >= 0 ? '+' : '') + r.changePct.toFixed(2) + '%</span>' +
+          '</div>';
+      }}).join('') + '</div>';
+    }}
+
+    var html = '';
+    rows.forEach(function (r) {{
+      var ticker = r.ticker, pick = r.pick, checkPrice = r.checkPrice, current = r.current, changePct = r.changePct;
       var stopPrice = checkPrice * (1 + STOP_LOSS_PCT);
       var targetPrice = checkPrice * (1 + TAKE_PROFIT_PCT);
       var checkedAtStr = new Date(pick.checkedAt).toLocaleString('ja-JP');
+      var widgetId = 'tv_selected_' + ticker.replace('.T', '');
 
       var currentBlock;
+      var gaugeHtml = '';
       if (current !== null) {{
-        var changePct = ((current - checkPrice) / checkPrice) * 100;
         var cls = changePct >= 0 ? 'rise' : 'fall';
         currentBlock = '<span class="' + cls + '">現在値 ' + yen(current) + '円（チェック時から' + (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%）</span>';
+
+        var span = TAKE_PROFIT_PCT - STOP_LOSS_PCT;
+        var gaugePct = Math.max(0, Math.min(1, ((changePct / 100) - STOP_LOSS_PCT) / span)) * 100;
+        gaugeHtml = '<div class="gauge"><div class="gauge-track">' +
+          '<div class="gauge-marker" style="left:' + gaugePct.toFixed(1) + '%"></div></div>' +
+          '<div class="gauge-labels">' +
+          '<span>ここで売れば損切り（' + (STOP_LOSS_PCT * 100).toFixed(0) + '%）</span>' +
+          '<span class="pnl ' + cls + '">' + (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%</span>' +
+          '<span>ここで売れば利確（' + (TAKE_PROFIT_PCT * 100).toFixed(0) + '%）</span>' +
+          '</div></div>';
       }} else {{
         currentBlock = '<span class="portfolio-detail">現在値: 今回のスキャン対象外のため不明（このダッシュボードを更新すると再取得されます）</span>';
       }}
@@ -3325,12 +3436,18 @@ footer.disclaimer {{
         '</div>' +
         '<div class="detail">チェック時点の価格 ' + yen(checkPrice) + '円（' + checkedAtStr + '）</div>' +
         '<div class="detail">' + currentBlock + '</div>' +
+        gaugeHtml +
+        '<div class="tv-widget-container" id="' + widgetId + '"></div>' +
         '<div class="timing"><div class="timing-row"><span class="timing-label">売るタイミング</span>' +
         '<span>' + yen(stopPrice) + '円を下回ったら損切り、' + yen(targetPrice) + '円を上回ったら利確が目安' +
         '（チェック時点の価格基準）。</span></div></div>' +
         '</div>';
     }});
-    container.innerHTML = html;
+    container.innerHTML = summaryHtml + compareHtml + html;
+
+    rows.forEach(function (r) {{
+      window.embedTVWidget('tv_selected_' + r.ticker.replace('.T', ''), r.ticker, 160);
+    }});
 
     container.querySelectorAll('.selected-remove-btn').forEach(function (btn) {{
       btn.addEventListener('click', function () {{
